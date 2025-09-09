@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>PVLM URL Shortener</title>
+
+  <!-- Bootstrap -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+
+  <style>
+    body { background:#f8f9fa; }
+    .app { max-width:480px; margin:20px auto; min-height:90vh; display:flex; flex-direction:column; background:#fff; border-radius:10px; box-shadow:0 6px 18px rgba(0,0,0,0.06); overflow:hidden; }
+    header{ background:#0d6efd; color:#fff; padding:14px 16px; font-weight:600; text-align:center; }
+    main{ padding:18px; flex:1; }
+    footer{ padding:10px; text-align:center; font-size:12px; color:#666; }
+    #result img{ margin-top:12px; max-width:200px; }
+    .small-muted{ font-size:12px; color:#666; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header>PVLM URL Shortener</header>
+
+    <main>
+      <div id="authArea" class="text-center mb-3">
+        <button id="loginBtn" class="btn btn-danger btn-sm">Login with Google</button>
+        <button id="logoutBtn" class="btn btn-secondary btn-sm d-none">Logout</button>
+        <div id="userInfo" class="mt-2 small-muted"></div>
+      </div>
+
+      <div id="appArea" class="d-none">
+        <div class="mb-2">
+          <label class="form-label">Service</label>
+          <select id="service" class="form-select">
+            <option value="tinyurl">TinyURL</option>
+            <option value="bitly">Bitly</option>
+          </select>
+        </div>
+
+        <div class="mb-2">
+          <label class="form-label">Long URL</label>
+          <input id="longUrl" type="text" class="form-control" placeholder="https://example.com">
+        </div>
+
+        <div class="mb-2">
+          <label class="form-label">Custom alias (optional, may fail on Bitly)</label>
+          <input id="alias" type="text" class="form-control" placeholder="customalias">
+        </div>
+
+        <div class="d-grid mb-3">
+          <button id="shortenBtn" class="btn btn-primary">Shorten & save</button>
+        </div>
+
+        <div id="result" class="text-center"></div>
+
+        <h6 class="mt-4">Your history</h6>
+        <ul id="historyList" class="list-group small"></ul>
+      </div>
+    </main>
+
+    <footer>Made by PVLM</footer>
+  </div>
+
+  <!-- Firebase compat SDKs -->
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
+
+  <!-- Axios -->
+  <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+
+  <!-- Bootstrap JS -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+
+  <script>
+  // ====== Firebase config (already from you) ======
+  const firebaseConfig = {
+    apiKey: "AIzaSyBmWk1YMAp7tX89Hijz3o7_tiM62ZvRvKc",
+    authDomain: "pvlm-url.firebaseapp.com",
+    databaseURL: "https://pvlm-url-default-rtdb.firebaseio.com",
+    projectId: "pvlm-url",
+    storageBucket: "pvlm-url.firebasestorage.app",
+    messagingSenderId: "568009407938",
+    appId: "1:568009407938:web:18f89e80fc691be69dea5b",
+    measurementId: "G-9MTJZMNB1K"
+  };
+
+  // ====== Init Firebase ======
+  firebase.initializeApp(firebaseConfig);
+  const auth = firebase.auth();
+  const db = firebase.database();
+
+  // ====== Bitly token (from you) ======
+  const BITLY_TOKEN = "11778e9f5448a0f63cb42da32f38f190a1136c3f";
+
+  // ====== UI refs ======
+  const loginBtn = document.getElementById('loginBtn');
+  const logoutBtn = document.getElementById('logoutBtn');
+  const userInfo = document.getElementById('userInfo');
+  const appArea = document.getElementById('appArea');
+  const serviceEl = document.getElementById('service');
+  const longUrlEl = document.getElementById('longUrl');
+  const aliasEl = document.getElementById('alias');
+  const shortenBtn = document.getElementById('shortenBtn');
+  const resultEl = document.getElementById('result');
+  const historyList = document.getElementById('historyList');
+
+  let currentUser = null;
+
+  // ====== Auth handlers ======
+  loginBtn.addEventListener('click', async () => {
+    const provider = new firebase.auth.GoogleAuthProvider();
+    try {
+      await auth.signInWithPopup(provider);
+    } catch (err) {
+      alert('Login failed: ' + (err.message || err));
+    }
+  });
+
+  logoutBtn.addEventListener('click', async () => {
+    await auth.signOut();
+  });
+
+  auth.onAuthStateChanged(user => {
+    if (user) {
+      currentUser = user;
+      loginBtn.classList.add('d-none');
+      logoutBtn.classList.remove('d-none');
+      userInfo.textContent = user.displayName + ' • ' + user.email;
+      appArea.classList.remove('d-none');
+      loadHistory();
+    } else {
+      currentUser = null;
+      loginBtn.classList.remove('d-none');
+      logoutBtn.classList.add('d-none');
+      userInfo.textContent = '';
+      appArea.classList.add('d-none');
+      resultEl.innerHTML = '';
+      historyList.innerHTML = '';
+    }
+  });
+
+  // ====== Shorten and save ======
+  shortenBtn.addEventListener('click', async () => {
+    const longUrl = longUrlEl.value.trim();
+    const alias = aliasEl.value.trim();
+    const service = serviceEl.value;
+
+    if (!longUrl) { alert('Enter a URL'); return; }
+
+    resultEl.innerHTML = '<div class="small-muted">Working...</div>';
+
+    try {
+      let shortUrl = '';
+
+      if (service === 'tinyurl') {
+        // tinyurl simple API
+        const api = `https://tinyurl.com/api-create.php?url=${encodeURIComponent(longUrl)}`;
+        const r = await fetch(api);
+        shortUrl = await r.text();
+      } else if (service === 'bitly') {
+        // Bitly API
+        const body = { long_url: longUrl, domain: 'bit.ly' };
+        if (alias) {
+          // Bitly custom alias often not allowed, but try.
+          body.custom_bitlink = `bit.ly/${alias}`;
+        }
+        const res = await axios.post('https://api-ssl.bitly.com/v4/shorten', body, {
+          headers: { Authorization: 'Bearer ' + BITLY_TOKEN, 'Content-Type': 'application/json' }
+        });
+        if (res.data && res.data.link) shortUrl = res.data.link;
+        else throw new Error('Bitly error');
+      }
+
+      // show result and QR
+      resultEl.innerHTML = `
+        <p><a href="${shortUrl}" target="_blank" class="fw-bold text-primary">${shortUrl}</a></p>
+        <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(shortUrl)}" alt="QR">
+      `;
+
+      // save to realtime db under user uid
+      if (currentUser) {
+        const entry = {
+          longUrl,
+          shortUrl,
+          service,
+          createdAt: Date.now()
+        };
+        const newRef = db.ref('history/' + currentUser.uid).push();
+        await newRef.set(entry);
+        loadHistory();
+      }
+
+    } catch (err) {
+      console.error(err);
+      alert('Error: ' + (err.response?.data?.message || err.message || err));
+      resultEl.innerHTML = '';
+    }
+  });
+
+  // ====== Load history ======
+  async function loadHistory() {
+    if (!currentUser) return;
+    historyList.innerHTML = '<li class="list-group-item small-muted">Loading</li>';
+    const ref = db.ref('history/' + currentUser.uid);
+    ref.orderByChild('createdAt').limitToLast(50).on('value', snap => {
+      historyList.innerHTML = '';
+      const data = snap.val();
+      if (!data) {
+        historyList.innerHTML = '<li class="list-group-item">No history</li>';
+        return;
+      }
+      // show newest first
+      const items = Object.entries(data).map(([k,v]) => v).sort((a,b)=> b.createdAt - a.createdAt);
+      for (const it of items) {
+        const li = document.createElement('li');
+        li.className = 'list-group-item';
+        li.innerHTML = `<a href="${it.shortUrl}" target="_blank">${it.shortUrl}</a>
+                        <div class="small text-truncate">${it.longUrl}</div>
+                        <div class="small text-muted">${new Date(it.createdAt).toLocaleString()}</div>`;
+        historyList.appendChild(li);
+      }
+    });
+  }
+
+  // ====== Simple guard: remove sensitive logs ======
+  window.addEventListener('error', e => console.log('err', e.message));
+  </script>
+</body>
+</html>
